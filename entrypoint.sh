@@ -143,20 +143,19 @@ run_scan() {
     progress_monitor "$SCAN_LOG" "$start_time" &
     local monitor_pid=$!
 
-    # Run clamscan with output going to log file for progress tracking
-    # --infected prints only infected files, --log writes ALL results to file
+    # Run clamscan — redirect ALL output to log file for real-time progress tracking.
+    # Without --infected, every file gets a line (file: OK or file: FOUND).
+    # Without --log, we control output via shell redirect (--log only writes at END).
     local scan_result=0
     nice -n 19 ionice -c3 clamscan \
         --database="$CLAM_DB" \
         --recursive \
-        --infected \
-        --log="$SCAN_LOG" \
         --max-filesize=100M \
         --max-scansize=400M \
         --max-recursion=16 \
         --max-dir-recursion=30 \
         $excludes \
-        "$scan_target" 2>&1 || scan_result=$?
+        "$scan_target" > "$SCAN_LOG" 2>&1 || scan_result=$?
 
     # Stop progress monitor
     rm -f "${SCAN_LOG}.running"
