@@ -10,6 +10,7 @@ LOG_DIR="/data/logs"
 QUARANTINE_DIR="/data/quarantine"
 CLAM_DB="/data/clamav"
 REPORT_FILE="${LOG_DIR}/last-scan-report.txt"
+SCAN_LOG="${LOG_DIR}/clamscan-current.log"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 mkdir -p "$LOG_DIR" "$QUARANTINE_DIR" "$CLAM_DB"
@@ -32,25 +33,33 @@ send_telegram() {
 
 # ---- Update signatures ----
 update_signatures() {
-    echo "[$TIMESTAMP] Updating ClamAV signatures..."
-    # Point clamscan at our persistent DB
+    echo "[$(date '+%H:%M:%S')] Updating ClamAV signatures..."
     if [ ! -f "$CLAM_DB/main.cvd" ] && [ ! -f "$CLAM_DB/main.cld" ]; then
-        echo "[$TIMESTAMP] First run — downloading ClamAV database (this takes a few minutes)..."
+        echo "[$(date '+%H:%M:%S')] First run — downloading ClamAV database (this takes a few minutes)..."
     fi
     freshclam --datadir="$CLAM_DB" --config-file=/etc/clamav/freshclam.conf --foreground 2>&1 | tail -10 || {
-        echo "[$TIMESTAMP] freshclam failed, trying without config..."
-        freshclam --datadir="$CLAM_DB" --no-dns 2>&1 | tail -10 || echo "[$TIMESTAMP] WARNING: ClamAV signature update failed. Using existing signatures if available."
+        echo "[$(date '+%H:%M:%S')] freshclam failed, trying without config..."
+        freshclam --datadir="$CLAM_DB" --no-dns 2>&1 | tail -10 || echo "[$(date '+%H:%M:%S')] WARNING: ClamAV signature update failed. Using existing signatures if available."
     }
-    echo "[$TIMESTAMP] ClamAV signatures updated."
+    echo "[$(date '+%H:%M:%S')] ClamAV signatures updated."
 
-    echo "[$TIMESTAMP] Updating maldet signatures..."
-    /usr/local/maldetect/maldet --update 2>&1 | tail -5 || echo "[$TIMESTAMP] maldet signature update skipped (may not have new sigs)"
-    echo "[$TIMESTAMP] maldet signatures updated."
+    echo "[$(date '+%H:%M:%S')] Updating maldet signatures..."
+    /usr/local/maldetect/maldet --update 2>&1 | tail -5 || echo "[$(date '+%H:%M:%S')] maldet signature update skipped (may not have new sigs)"
+    echo "[$(date '+%H:%M:%S')] maldet signatures updated."
 }
 
 # ---- Build exclude arguments ----
 build_excludes() {
     local excludes=""
+
+    # Smart defaults: always exclude these large binary/database directories
+    # that are not meaningful malware targets
+    local default_excludes="PlexMediaServer Plex-Media-Server jellyfin maldet-scanner clamav"
+    for dir in $default_excludes; do
+        excludes="${excludes} --exclude-dir=${SCAN_PATH}/${dir}"
+    done
+
+    # User-specified excludes from SCAN_EXCLUDES env var (pipe-separated)
     if [ -n "${SCAN_EXCLUDES:-}" ]; then
         IFS='|' read -ra EXCLUDE_ARRAY <<< "$SCAN_EXCLUDES"
         for pattern in "${EXCLUDE_ARRAY[@]}"; do
@@ -61,6 +70,47 @@ build_excludes() {
         done
     fi
     echo "$excludes"
+}
+
+# ---- Progress monitor (background) ----
+# Tails clamscan log and prints periodic status updates
+progress_monitor() {
+    local log_file="$1"
+    local start_time="$2"
+    local interval="${PROGRESS_INTERVAL:-30}"
+
+    # Wait for log file to appear
+    local wait_count=0
+    while [ ! -f "$log_file" ] && [ $wait_count -lt 30 ]; do
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+
+    local last_count=0
+    while [ -f "$log_file.running" ]; do
+        sleep "$interval"
+        [ -f "$log_file" ] || continue
+
+        local current_count=$(wc -l < "$log_file" 2>/dev/null || echo 0)
+        local elapsed=$(( $(date +%s) - start_time ))
+        local elapsed_min=$((elapsed / 60))
+        local elapsed_sec=$((elapsed % 60))
+        local new_files=$((current_count - last_count))
+        local rate=0
+        if [ $elapsed -gt 0 ]; then
+            rate=$((current_count * 60 / elapsed))
+        fi
+
+        # Count infected so far
+        local infected_so_far=$(grep -c "FOUND$" "$log_file" 2>/dev/null || echo 0)
+        local infected_msg=""
+        if [ "$infected_so_far" -gt 0 ]; then
+            infected_msg=" | THREATS: ${infected_so_far}"
+        fi
+
+        echo "[$(date '+%H:%M:%S')] Progress: ${current_count} files scanned (${elapsed_min}m${elapsed_sec}s, ~${rate}/min, +${new_files} since last)${infected_msg}"
+        last_count=$current_count
+    done
 }
 
 # ---- Run scan ----
@@ -79,43 +129,49 @@ run_scan() {
     # Update signatures first
     update_signatures
 
-    # Configure maldet to use our ClamAV DB
-    export CLAM_DB_PATH="$CLAM_DB"
-
     # Build clamscan command with excludes
     local excludes=$(build_excludes)
+    echo "[$(date '+%H:%M:%S')] Starting scan of $scan_target..."
+    echo "[$(date '+%H:%M:%S')] Excludes: ${excludes}"
+    echo "[$(date '+%H:%M:%S')] Progress updates every ${PROGRESS_INTERVAL:-30}s"
+    echo ""
 
-    echo "[$TIMESTAMP] Starting scan of $scan_target..."
-    echo "[$TIMESTAMP] Excludes: ${SCAN_EXCLUDES:-none}"
+    # Create sentinel file and start progress monitor
+    : > "$SCAN_LOG"
+    touch "${SCAN_LOG}.running"
+    progress_monitor "$SCAN_LOG" "$start_time" &
+    local monitor_pid=$!
 
-    # Use clamscan directly with maldet's + ClamAV's signatures for best results
-    # clamscan uses memory only during scan, then releases it
+    # Run clamscan with output going to log file for progress tracking
+    # --infected prints only infected files, --log writes ALL results to file
     local scan_result=0
-    local scan_output
-
-    scan_output=$(nice -n 19 ionice -c3 clamscan \
+    nice -n 19 ionice -c3 clamscan \
         --database="$CLAM_DB" \
         --recursive \
         --infected \
-        --suppress-ok-results \
+        --log="$SCAN_LOG" \
         --max-filesize=100M \
         --max-scansize=400M \
         --max-recursion=16 \
         --max-dir-recursion=30 \
         $excludes \
-        "$scan_target" 2>&1) || scan_result=$?
+        "$scan_target" 2>&1 || scan_result=$?
+
+    # Stop progress monitor
+    rm -f "${SCAN_LOG}.running"
+    kill $monitor_pid 2>/dev/null || true
+    wait $monitor_pid 2>/dev/null || true
 
     local end_time=$(date +%s)
     local duration=$(( end_time - start_time ))
     local duration_min=$(( duration / 60 ))
     local duration_sec=$(( duration % 60 ))
 
-    # Parse results
+    # Parse results from log file
+    local scan_output=$(cat "$SCAN_LOG" 2>/dev/null || echo "")
     local files_scanned=$(echo "$scan_output" | grep "Scanned files:" | awk '{print $NF}')
     local infected=$(echo "$scan_output" | grep "Infected files:" | awk '{print $NF}')
     local data_scanned=$(echo "$scan_output" | grep "Data scanned:" | awk '{print $3, $4}')
-
-    # Get list of infected files
     local infected_list=$(echo "$scan_output" | grep "FOUND$" || true)
 
     # Build report
@@ -140,12 +196,16 @@ run_scan() {
     } > "$REPORT_FILE"
 
     # Print report to stdout (Docker logs)
+    echo ""
+    echo "============================================================"
+    echo "  SCAN COMPLETE"
+    echo "============================================================"
     cat "$REPORT_FILE"
 
     # Handle quarantine
     if [ "${infected:-0}" != "0" ] && [ "$QUARANTINE_ENABLED" = "true" ]; then
         echo ""
-        echo "[$TIMESTAMP] Quarantining infected files..."
+        echo "[$(date '+%H:%M:%S')] Quarantining infected files..."
         echo "$infected_list" | while IFS= read -r line; do
             local filepath=$(echo "$line" | cut -d: -f1)
             if [ -f "$filepath" ]; then
@@ -174,7 +234,6 @@ run_scan() {
 <b>Result:</b> ${status_text}"
 
         if [ -n "$infected_list" ]; then
-            # Truncate to avoid Telegram message limit
             local threat_summary=$(echo "$infected_list" | head -10 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
             tg_message="${tg_message}
 
@@ -186,9 +245,11 @@ run_scan() {
     fi
 
     echo ""
-    echo "[$TIMESTAMP] Scan complete. Report saved to $REPORT_FILE"
+    echo "[$(date '+%H:%M:%S')] Scan complete. Report saved to $REPORT_FILE"
 
-    # Exit with appropriate code
+    # Clean up scan log (keep report, remove verbose log)
+    rm -f "$SCAN_LOG" "${SCAN_LOG}.running"
+
     if [ "${infected:-0}" != "0" ]; then
         return 1
     fi
@@ -229,7 +290,6 @@ run_update() {
     update_signatures
     echo "[$TIMESTAMP] Signature update complete."
 
-    # Show signature stats
     echo ""
     echo "ClamAV DB files:"
     ls -lh "$CLAM_DB"/*.c?d 2>/dev/null || echo "  No ClamAV DB files found"

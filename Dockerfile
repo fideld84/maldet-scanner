@@ -58,6 +58,7 @@ ENV TZ=America/Los_Angeles \
     TELEGRAM_CHAT_ID="" \
     QUARANTINE_ENABLED=true \
     SCAN_EXCLUDES="" \
+    PROGRESS_INTERVAL=30 \
     MODE=scan
 
 ENTRYPOINT ["/entrypoint.sh"]
