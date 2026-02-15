@@ -102,9 +102,10 @@ progress_monitor() {
         fi
 
         # Count infected so far
-        local infected_so_far=$(grep -c "FOUND$" "$log_file" 2>/dev/null || echo 0)
+        local infected_so_far
+        infected_so_far=$(grep -c "FOUND$" "$log_file" 2>/dev/null) || infected_so_far=0
         local infected_msg=""
-        if [ "$infected_so_far" -gt 0 ]; then
+        if [ "$infected_so_far" -gt 0 ] 2>/dev/null; then
             infected_msg=" | THREATS: ${infected_so_far}"
         fi
 
