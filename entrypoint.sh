@@ -56,7 +56,7 @@ build_excludes() {
     # that are not meaningful malware targets
     local default_excludes="PlexMediaServer Plex-Media-Server jellyfin maldet-scanner clamav"
     for dir in $default_excludes; do
-        excludes="${excludes} --exclude-dir=${SCAN_PATH}/${dir}"
+        excludes="${excludes} --exclude-dir=${dir}"
     done
 
     # User-specified excludes from SCAN_EXCLUDES env var (pipe-separated)
