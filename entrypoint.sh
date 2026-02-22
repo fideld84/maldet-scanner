@@ -91,7 +91,8 @@ progress_monitor() {
         sleep "$interval"
         [ -f "$log_file" ] || continue
 
-        local current_count=$(wc -l < "$log_file" 2>/dev/null || echo 0)
+        local current_count
+        current_count=$(wc -l < "$log_file" 2>/dev/null || echo 0)
         local elapsed=$(( $(date +%s) - start_time ))
         local elapsed_min=$((elapsed / 60))
         local elapsed_sec=$((elapsed % 60))
@@ -117,7 +118,8 @@ progress_monitor() {
 # ---- Run scan ----
 run_scan() {
     local scan_target="${1:-$SCAN_PATH}"
-    local start_time=$(date +%s)
+    local start_time
+    start_time=$(date +%s)
 
     echo ""
     echo "============================================================"
@@ -131,7 +133,8 @@ run_scan() {
     update_signatures
 
     # Build clamscan command with excludes
-    local excludes=$(build_excludes)
+    local excludes
+    excludes=$(build_excludes)
     echo "[$(date '+%H:%M:%S')] Starting scan of $scan_target..."
     echo "[$(date '+%H:%M:%S')] Excludes: ${excludes}"
     echo "[$(date '+%H:%M:%S')] Progress updates every ${PROGRESS_INTERVAL:-30}s"
@@ -146,7 +149,6 @@ run_scan() {
     # Run clamscan — redirect ALL output to log file for real-time progress tracking.
     # Without --infected, every file gets a line (file: OK or file: FOUND).
     # Without --log, we control output via shell redirect (--log only writes at END).
-    local scan_result=0
     nice -n 19 ionice -c3 clamscan \
         --database="$CLAM_DB" \
         --recursive \
@@ -155,24 +157,30 @@ run_scan() {
         --max-recursion=16 \
         --max-dir-recursion=30 \
         $excludes \
-        "$scan_target" > "$SCAN_LOG" 2>&1 || scan_result=$?
+        "$scan_target" > "$SCAN_LOG" 2>&1 || true
 
     # Stop progress monitor
     rm -f "${SCAN_LOG}.running"
     kill $monitor_pid 2>/dev/null || true
     wait $monitor_pid 2>/dev/null || true
 
-    local end_time=$(date +%s)
+    local end_time
+    end_time=$(date +%s)
     local duration=$(( end_time - start_time ))
     local duration_min=$(( duration / 60 ))
     local duration_sec=$(( duration % 60 ))
 
     # Parse results from log file
-    local scan_output=$(cat "$SCAN_LOG" 2>/dev/null || echo "")
-    local files_scanned=$(echo "$scan_output" | grep "Scanned files:" | awk '{print $NF}')
-    local infected=$(echo "$scan_output" | grep "Infected files:" | awk '{print $NF}')
-    local data_scanned=$(echo "$scan_output" | grep "Data scanned:" | awk '{print $3, $4}')
-    local infected_list=$(echo "$scan_output" | grep "FOUND$" || true)
+    local scan_output
+    scan_output=$(cat "$SCAN_LOG" 2>/dev/null || echo "")
+    local files_scanned
+    files_scanned=$(echo "$scan_output" | grep "Scanned files:" | awk '{print $NF}')
+    local infected
+    infected=$(echo "$scan_output" | grep "Infected files:" | awk '{print $NF}')
+    local data_scanned
+    data_scanned=$(echo "$scan_output" | grep "Data scanned:" | awk '{print $3, $4}')
+    local infected_list
+    infected_list=$(echo "$scan_output" | grep "FOUND$" || true)
 
     # Build report
     {
@@ -207,11 +215,13 @@ run_scan() {
         echo ""
         echo "[$(date '+%H:%M:%S')] Quarantining infected files..."
         echo "$infected_list" | while IFS= read -r line; do
-            local filepath=$(echo "$line" | cut -d: -f1)
+            local filepath
+            filepath=$(echo "$line" | cut -d: -f1)
             if [ -f "$filepath" ]; then
-                local basename=$(basename "$filepath")
-                local qpath="${QUARANTINE_DIR}/${basename}.$(date +%s)"
-                cp "$filepath" "$qpath" 2>/dev/null && echo "  Quarantined: $basename" || true
+                local qbasename
+                qbasename=$(basename "$filepath")
+                local qpath="${QUARANTINE_DIR}/${qbasename}.$(date +%s)"
+                cp "$filepath" "$qpath" 2>/dev/null && echo "  Quarantined: $qbasename" || true
             fi
         done
     fi
@@ -234,7 +244,8 @@ run_scan() {
 <b>Result:</b> ${status_text}"
 
         if [ -n "$infected_list" ]; then
-            local threat_summary=$(echo "$infected_list" | head -10 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+            local threat_summary
+            threat_summary=$(echo "$infected_list" | head -10 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
             tg_message="${tg_message}
 
 <b>Threats:</b>
@@ -276,9 +287,10 @@ New/modified files will be scanned automatically."
 <pre>$(echo "$result" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</pre>"
 
                 if [ "$QUARANTINE_ENABLED" = "true" ]; then
-                    local basename=$(basename "$file")
-                    cp "$file" "${QUARANTINE_DIR}/${basename}.$(date +%s)" 2>/dev/null || true
-                    echo "  Quarantined: $basename"
+                    local mbasename
+                    mbasename=$(basename "$file")
+                    cp "$file" "${QUARANTINE_DIR}/${mbasename}.$(date +%s)" 2>/dev/null || true
+                    echo "  Quarantined: $mbasename"
                 fi
             fi
         fi
