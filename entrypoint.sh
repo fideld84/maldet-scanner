@@ -220,7 +220,8 @@ run_scan() {
             if [ -f "$filepath" ]; then
                 local qbasename
                 qbasename=$(basename "$filepath")
-                local qpath="${QUARANTINE_DIR}/${qbasename}.$(date +%s)"
+                local qpath
+                qpath="${QUARANTINE_DIR}/${qbasename}.$(date +%s)"
                 cp "$filepath" "$qpath" 2>/dev/null && echo "  Quarantined: $qbasename" || true
             fi
         done
