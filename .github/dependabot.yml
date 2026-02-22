@@ -1,0 +1,19 @@
+# Dependabot — Automated security update PRs
+# No npm dependencies (shell-only project). Tracks GitHub Actions versions only.
+
+version: 2
+updates:
+  # GitHub Actions (keep build actions up to date)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci(deps):"
