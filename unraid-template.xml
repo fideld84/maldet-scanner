@@ -12,7 +12,7 @@
   <Category>Security:</Category>
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/fideld84/maldet-scanner/main/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/rfxn/linux-malware-detect/master/files/internals/tpl/lmd.ico</Icon>
+  <Icon>https://raw.githubusercontent.com/fideld84/maldet-scanner/main/icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset>0,1,8,9</CPUset>
