@@ -18,12 +18,8 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 # Only these directories get scanned. Everything else is ignored.
 # Override via SCAN_TARGETS env var (pipe-separated paths relative to /scan)
 DEFAULT_SCAN_TARGETS=(
-    # Nextcloud user files — syncs with external computers, #1 malware vector
-    "/scan/nextcloud/fidel"
-    "/scan/nextcloud/Dad"
-    "/scan/nextcloud/benneth"
-    "/scan/nextcloud/admin"
-    "/scan/nextcloud/acostafam"
+    # Nextcloud — scan all of it, internal cache dirs excluded below
+    "/scan/nextcloud"
     # Internet downloads
     "/scan/Download"
     # Shared files
@@ -56,6 +52,12 @@ GLOBAL_EXCLUDES=(
     ".vite"
     "dist"
     ".cache"
+    # Nextcloud internal dirs (cache, previews, updater) — not user files
+    "appdata_ocfczqns5ien"
+    "appdata_oc5mu3v8qzpe"
+    "appdata_ocup9j4vbqge"
+    "updater-oc5mu3v8qzpe"
+    "files_external"
 )
 
 mkdir -p "$LOG_DIR" "$QUARANTINE_DIR" "$CLAM_DB"
