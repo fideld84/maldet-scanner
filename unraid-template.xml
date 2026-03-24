@@ -8,7 +8,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/fideld84/maldet-scanner</Support>
   <Project>https://github.com/rfxn/linux-malware-detect</Project>
-  <Overview>Linux Malware Detect (maldet) + ClamAV scanner for Unraid. Uses ClamAV engine without the RAM-hungry daemon. Zero memory usage between scans. Supports Telegram alerts and progress logging.&#xD;&#xD;Modes:&#xD;- scan: Run a full scan and exit (default, use with User Scripts scheduler)&#xD;- monitor: Watch for new/modified files via inotify (runs continuously)&#xD;- update: Update signatures only</Overview>
+  <Overview>Linux Malware Detect (maldet) + ClamAV scanner for Unraid. Uses ClamAV engine without the RAM-hungry daemon. Zero memory usage between scans. Supports Telegram alerts and progress logging.&#xD;&#xD;v2: Targeted scan model — only scans high-risk directories (Nextcloud user files, Downloads, dev repos, internet-facing services) instead of everything with exclusions. 15x faster.&#xD;&#xD;Modes:&#xD;- scan: Run a full scan and exit (default, use with User Scripts scheduler)&#xD;- monitor: Watch for new/modified files via inotify (runs continuously)&#xD;- update: Update signatures only</Overview>
   <Category>Security:</Category>
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/fideld84/maldet-scanner/main/unraid-template.xml</TemplateURL>
@@ -20,14 +20,15 @@
   <DonateText/>
   <DonateLink/>
   <Requires/>
-  <Config Name="Scan Target" Target="/scan" Default="/mnt/user" Mode="ro" Description="Path to scan for malware. Mounted read-only for safety." Type="Path" Display="always" Required="true" Mask="false">/mnt/user</Config>
+  <Config Name="Scan Mount" Target="/scan" Default="/mnt/user" Mode="ro" Description="Root path mounted into container. Scan targets are subdirectories within this mount." Type="Path" Display="always" Required="true" Mask="false">/mnt/user</Config>
   <Config Name="Data Directory" Target="/data" Default="/mnt/user/appdata/maldet-scanner" Mode="rw" Description="Persistent storage for virus signatures, quarantine, and logs." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/maldet-scanner</Config>
   <Config Name="Mode" Target="MODE" Default="scan" Description="scan = full scan then exit | monitor = watch files continuously | update = update signatures only" Type="Variable" Display="always" Required="true" Mask="false">scan</Config>
+  <Config Name="Scan Targets" Target="SCAN_TARGETS" Default="" Description="Pipe-separated list of directories to scan (relative to /scan). Leave empty to use built-in defaults: Nextcloud user files, Downloads, Share, VSC_Projects, scripts, and internet-facing appdata services." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Scan Excludes" Target="SCAN_EXCLUDES" Default="" Description="Pipe-separated list of additional directories to exclude within scan targets (e.g. node_modules and .git are always excluded)." Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <Config Name="Telegram Alerts" Target="TELEGRAM_ENABLED" Default="false" Description="Enable Telegram notifications for scan results." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="Telegram Bot Token" Target="TELEGRAM_BOT_TOKEN" Default="" Description="Your Telegram bot token (from @BotFather)." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="Telegram Chat ID" Target="TELEGRAM_CHAT_ID" Default="" Description="Your Telegram chat or group ID." Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <Config Name="Quarantine" Target="QUARANTINE_ENABLED" Default="true" Description="Copy infected files to quarantine directory." Type="Variable" Display="always" Required="false" Mask="false">true</Config>
-  <Config Name="Scan Excludes" Target="SCAN_EXCLUDES" Default="" Description="Pipe-separated list of additional directories to exclude. PlexMediaServer, jellyfin, clamav, and maldet-scanner are always excluded automatically." Type="Variable" Display="always" Required="false" Mask="false">/scan/Media|/scan/isos|/scan/NVR|/scan/roms|/scan/Backups|/scan/domains|/scan/system|/scan/appdata/binhex-krusader|/scan/appdata/docker|/scan/nextcloud/appdata_ocfczqns5ien/preview</Config>
   <Config Name="Progress Interval" Target="PROGRESS_INTERVAL" Default="30" Description="Seconds between progress updates in Docker logs (0 to disable)." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
   <Config Name="Timezone" Target="TZ" Default="America/Los_Angeles" Description="Container timezone." Type="Variable" Display="advanced" Required="false" Mask="false">America/Los_Angeles</Config>
 </Container>

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# maldet-scanner entrypoint
+# maldet-scanner entrypoint v2
+# Include-only model: scan specific high-risk directories
 # Modes: scan (default), update, monitor
 # ============================================================
 
@@ -12,6 +13,50 @@ CLAM_DB="/data/clamav"
 REPORT_FILE="${LOG_DIR}/last-scan-report.txt"
 SCAN_LOG="${LOG_DIR}/clamscan-current.log"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+# ---- High-risk scan targets (include-only model) ----
+# Only these directories get scanned. Everything else is ignored.
+# Override via SCAN_TARGETS env var (pipe-separated paths relative to /scan)
+DEFAULT_SCAN_TARGETS=(
+    # Nextcloud user files — syncs with external computers, #1 malware vector
+    "/scan/nextcloud/fidel"
+    "/scan/nextcloud/Dad"
+    "/scan/nextcloud/benneth"
+    "/scan/nextcloud/admin"
+    "/scan/nextcloud/acostafam"
+    # Internet downloads
+    "/scan/Download"
+    # Shared files
+    "/scan/Share"
+    # Dev repos (node_modules excluded below)
+    "/scan/VSC_Projects"
+    # User scripts
+    "/scan/scripts"
+    # Internet-facing services
+    "/scan/appdata/swag"
+    "/scan/appdata/authentik"
+    "/scan/appdata/n8n"
+    "/scan/appdata/code-server"
+    "/scan/appdata/bitwarden"
+    "/scan/appdata/cloudflared"
+    "/scan/appdata/fda-chronicle"
+    "/scan/appdata/fda-dashboard"
+    "/scan/appdata/fda-homepage"
+    "/scan/appdata/trip-planner"
+    "/scan/appdata/auth-manager"
+    "/scan/appdata/open-webui"
+)
+
+# Global directory excludes — large generated/cache dirs within scan targets
+GLOBAL_EXCLUDES=(
+    "node_modules"
+    ".git"
+    "__pycache__"
+    ".next"
+    ".vite"
+    "dist"
+    ".cache"
+)
 
 mkdir -p "$LOG_DIR" "$QUARANTINE_DIR" "$CLAM_DB"
 
@@ -48,22 +93,43 @@ update_signatures() {
     echo "[$(date '+%H:%M:%S')] maldet signatures updated."
 }
 
+# ---- Build scan target list ----
+build_scan_targets() {
+    local targets=()
+
+    if [ -n "${SCAN_TARGETS:-}" ]; then
+        # User override via env var (pipe-separated)
+        IFS='|' read -ra targets <<< "$SCAN_TARGETS"
+    else
+        targets=("${DEFAULT_SCAN_TARGETS[@]}")
+    fi
+
+    # Filter to only existing directories
+    local valid_targets=()
+    for t in "${targets[@]}"; do
+        t=$(echo "$t" | xargs) # trim whitespace
+        if [ -d "$t" ]; then
+            valid_targets+=("$t")
+        else
+            echo "[$(date '+%H:%M:%S')] Skipping non-existent: $t" >&2
+        fi
+    done
+
+    echo "${valid_targets[@]}"
+}
+
 # ---- Build exclude arguments ----
 build_excludes() {
     local excludes=""
-
-    # Smart defaults: always exclude these large binary/database directories
-    # that are not meaningful malware targets
-    local default_excludes="PlexMediaServer Plex-Media-Server jellyfin maldet-scanner clamav"
-    for dir in $default_excludes; do
+    for dir in "${GLOBAL_EXCLUDES[@]}"; do
         excludes="${excludes} --exclude-dir=${dir}"
     done
 
-    # User-specified excludes from SCAN_EXCLUDES env var (pipe-separated)
+    # Additional user excludes from SCAN_EXCLUDES env var (pipe-separated)
     if [ -n "${SCAN_EXCLUDES:-}" ]; then
         IFS='|' read -ra EXCLUDE_ARRAY <<< "$SCAN_EXCLUDES"
         for pattern in "${EXCLUDE_ARRAY[@]}"; do
-            pattern=$(echo "$pattern" | xargs) # trim whitespace
+            pattern=$(echo "$pattern" | xargs)
             if [ -n "$pattern" ]; then
                 excludes="${excludes} --exclude-dir=${pattern}"
             fi
@@ -73,13 +139,11 @@ build_excludes() {
 }
 
 # ---- Progress monitor (background) ----
-# Tails clamscan log and prints periodic status updates
 progress_monitor() {
     local log_file="$1"
     local start_time="$2"
     local interval="${PROGRESS_INTERVAL:-30}"
 
-    # Wait for log file to appear
     local wait_count=0
     while [ ! -f "$log_file" ] && [ $wait_count -lt 30 ]; do
         sleep 1
@@ -91,8 +155,7 @@ progress_monitor() {
         sleep "$interval"
         [ -f "$log_file" ] || continue
 
-        local current_count
-        current_count=$(wc -l < "$log_file" 2>/dev/null || echo 0)
+        local current_count=$(wc -l < "$log_file" 2>/dev/null || echo 0)
         local elapsed=$(( $(date +%s) - start_time ))
         local elapsed_min=$((elapsed / 60))
         local elapsed_sec=$((elapsed % 60))
@@ -102,7 +165,6 @@ progress_monitor() {
             rate=$((current_count * 60 / elapsed))
         fi
 
-        # Count infected so far
         local infected_so_far
         infected_so_far=$(grep -c "FOUND$" "$log_file" 2>/dev/null) || infected_so_far=0
         local infected_msg=""
@@ -117,26 +179,37 @@ progress_monitor() {
 
 # ---- Run scan ----
 run_scan() {
-    local scan_target="${1:-$SCAN_PATH}"
-    local start_time
-    start_time=$(date +%s)
+    local start_time=$(date +%s)
+
+    # Build target list
+    local scan_targets_str=$(build_scan_targets)
+    read -ra scan_targets <<< "$scan_targets_str"
+
+    if [ ${#scan_targets[@]} -eq 0 ]; then
+        echo "[$(date '+%H:%M:%S')] ERROR: No valid scan targets found!"
+        exit 1
+    fi
 
     echo ""
     echo "============================================================"
-    echo "  maldet + ClamAV Scanner"
-    echo "  Target: $scan_target"
+    echo "  maldet + ClamAV Scanner (v2 — targeted scan)"
+    echo "  Targets: ${#scan_targets[@]} directories"
     echo "  Started: $TIMESTAMP"
     echo "============================================================"
+    echo ""
+    echo "Scan targets:"
+    for t in "${scan_targets[@]}"; do
+        echo "  -> $t"
+    done
     echo ""
 
     # Update signatures first
     update_signatures
 
-    # Build clamscan command with excludes
-    local excludes
-    excludes=$(build_excludes)
-    echo "[$(date '+%H:%M:%S')] Starting scan of $scan_target..."
-    echo "[$(date '+%H:%M:%S')] Excludes: ${excludes}"
+    # Build excludes
+    local excludes=$(build_excludes)
+    echo "[$(date '+%H:%M:%S')] Global excludes: ${GLOBAL_EXCLUDES[*]}"
+    echo "[$(date '+%H:%M:%S')] Starting targeted scan..."
     echo "[$(date '+%H:%M:%S')] Progress updates every ${PROGRESS_INTERVAL:-30}s"
     echo ""
 
@@ -146,9 +219,8 @@ run_scan() {
     progress_monitor "$SCAN_LOG" "$start_time" &
     local monitor_pid=$!
 
-    # Run clamscan — redirect ALL output to log file for real-time progress tracking.
-    # Without --infected, every file gets a line (file: OK or file: FOUND).
-    # Without --log, we control output via shell redirect (--log only writes at END).
+    # Run clamscan on all target directories at once
+    local scan_result=0
     nice -n 19 ionice -c3 clamscan \
         --database="$CLAM_DB" \
         --recursive \
@@ -157,30 +229,24 @@ run_scan() {
         --max-recursion=16 \
         --max-dir-recursion=30 \
         $excludes \
-        "$scan_target" > "$SCAN_LOG" 2>&1 || true
+        "${scan_targets[@]}" > "$SCAN_LOG" 2>&1 || scan_result=$?
 
     # Stop progress monitor
     rm -f "${SCAN_LOG}.running"
     kill $monitor_pid 2>/dev/null || true
     wait $monitor_pid 2>/dev/null || true
 
-    local end_time
-    end_time=$(date +%s)
+    local end_time=$(date +%s)
     local duration=$(( end_time - start_time ))
     local duration_min=$(( duration / 60 ))
     local duration_sec=$(( duration % 60 ))
 
-    # Parse results from log file
-    local scan_output
-    scan_output=$(cat "$SCAN_LOG" 2>/dev/null || echo "")
-    local files_scanned
-    files_scanned=$(echo "$scan_output" | grep "Scanned files:" | awk '{print $NF}')
-    local infected
-    infected=$(echo "$scan_output" | grep "Infected files:" | awk '{print $NF}')
-    local data_scanned
-    data_scanned=$(echo "$scan_output" | grep "Data scanned:" | awk '{print $3, $4}')
-    local infected_list
-    infected_list=$(echo "$scan_output" | grep "FOUND$" || true)
+    # Parse results
+    local scan_output=$(cat "$SCAN_LOG" 2>/dev/null || echo "")
+    local files_scanned=$(echo "$scan_output" | grep "Scanned files:" | awk '{print $NF}')
+    local infected=$(echo "$scan_output" | grep "Infected files:" | awk '{print $NF}')
+    local data_scanned=$(echo "$scan_output" | grep "Data scanned:" | awk '{print $3, $4}')
+    local infected_list=$(echo "$scan_output" | grep "FOUND$" || true)
 
     # Build report
     {
@@ -188,11 +254,16 @@ run_scan() {
         echo "  SCAN REPORT — $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
         echo ""
-        echo "Target:     $scan_target"
+        echo "Targets:    ${#scan_targets[@]} directories"
         echo "Duration:   ${duration_min}m ${duration_sec}s"
         echo "Files:      ${files_scanned:-unknown}"
         echo "Data:       ${data_scanned:-unknown}"
         echo "Infected:   ${infected:-0}"
+        echo ""
+        echo "Scanned directories:"
+        for t in "${scan_targets[@]}"; do
+            echo "  -> $t"
+        done
         echo ""
         if [ -n "$infected_list" ]; then
             echo "THREATS FOUND:"
@@ -203,7 +274,6 @@ run_scan() {
         echo "$scan_output" | tail -15
     } > "$REPORT_FILE"
 
-    # Print report to stdout (Docker logs)
     echo ""
     echo "============================================================"
     echo "  SCAN COMPLETE"
@@ -215,38 +285,34 @@ run_scan() {
         echo ""
         echo "[$(date '+%H:%M:%S')] Quarantining infected files..."
         echo "$infected_list" | while IFS= read -r line; do
-            local filepath
-            filepath=$(echo "$line" | cut -d: -f1)
+            local filepath=$(echo "$line" | cut -d: -f1)
             if [ -f "$filepath" ]; then
-                local qbasename
-                qbasename=$(basename "$filepath")
-                local qpath
-                qpath="${QUARANTINE_DIR}/${qbasename}.$(date +%s)"
-                cp "$filepath" "$qpath" 2>/dev/null && echo "  Quarantined: $qbasename" || true
+                local bname=$(basename "$filepath")
+                local qpath="${QUARANTINE_DIR}/${bname}.$(date +%s)"
+                cp "$filepath" "$qpath" 2>/dev/null && echo "  Quarantined: $bname" || true
             fi
         done
     fi
 
     # Send Telegram notification
     if [ "$TELEGRAM_ENABLED" = "true" ]; then
-        local status_icon="✅"
+        local status_icon="OK"
         local status_text="Clean"
         if [ "${infected:-0}" != "0" ]; then
-            status_icon="🚨"
+            status_icon="ALERT"
             status_text="${infected} THREATS FOUND"
         fi
 
         local tg_message="<b>${status_icon} Malware Scan Complete</b>
 
-<b>Target:</b> ${scan_target}
+<b>Targets:</b> ${#scan_targets[@]} directories
 <b>Duration:</b> ${duration_min}m ${duration_sec}s
 <b>Files scanned:</b> ${files_scanned:-unknown}
 <b>Data scanned:</b> ${data_scanned:-unknown}
 <b>Result:</b> ${status_text}"
 
         if [ -n "$infected_list" ]; then
-            local threat_summary
-            threat_summary=$(echo "$infected_list" | head -10 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+            local threat_summary=$(echo "$infected_list" | head -10 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
             tg_message="${tg_message}
 
 <b>Threats:</b>
@@ -258,8 +324,6 @@ run_scan() {
 
     echo ""
     echo "[$(date '+%H:%M:%S')] Scan complete. Report saved to $REPORT_FILE"
-
-    # Clean up scan log (keep report, remove verbose log)
     rm -f "$SCAN_LOG" "${SCAN_LOG}.running"
 
     if [ "${infected:-0}" != "0" ]; then
@@ -270,28 +334,31 @@ run_scan() {
 
 # ---- Monitor mode (inotify) ----
 run_monitor() {
-    echo "[$TIMESTAMP] Starting inotify monitor on $SCAN_PATH..."
+    echo "[$TIMESTAMP] Starting inotify monitor on scan targets..."
     update_signatures
 
-    send_telegram "🔍 <b>Malware Monitor Started</b>
-Watching: ${SCAN_PATH}
+    local scan_targets_str=$(build_scan_targets)
+    read -ra scan_targets <<< "$scan_targets_str"
+
+    send_telegram "<b>Malware Monitor Started</b>
+Watching: ${#scan_targets[@]} directories
 New/modified files will be scanned automatically."
 
-    inotifywait -m -r -e create -e modify -e moved_to "$SCAN_PATH" --format '%w%f' 2>/dev/null | while IFS= read -r file; do
+    # Monitor all target directories
+    inotifywait -m -r -e create -e modify -e moved_to "${scan_targets[@]}" --format '%w%f' 2>/dev/null | while IFS= read -r file; do
         if [ -f "$file" ]; then
             echo "[$(date '+%H:%M:%S')] Scanning: $file"
             local result
             result=$(clamscan --database="$CLAM_DB" --infected --no-summary "$file" 2>&1) || true
             if echo "$result" | grep -q "FOUND"; then
-                echo "🚨 THREAT: $result"
-                send_telegram "🚨 <b>Malware Detected!</b>
+                echo "THREAT: $result"
+                send_telegram "<b>Malware Detected!</b>
 <pre>$(echo "$result" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</pre>"
 
                 if [ "$QUARANTINE_ENABLED" = "true" ]; then
-                    local mbasename
-                    mbasename=$(basename "$file")
-                    cp "$file" "${QUARANTINE_DIR}/${mbasename}.$(date +%s)" 2>/dev/null || true
-                    echo "  Quarantined: $mbasename"
+                    local bname=$(basename "$file")
+                    cp "$file" "${QUARANTINE_DIR}/${bname}.$(date +%s)" 2>/dev/null || true
+                    echo "  Quarantined: $bname"
                 fi
             fi
         fi
@@ -315,7 +382,7 @@ run_update() {
 # ---- Main ----
 case "${MODE:-scan}" in
     scan)
-        run_scan "$SCAN_PATH"
+        run_scan
         ;;
     monitor)
         run_monitor
