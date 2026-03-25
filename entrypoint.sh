@@ -44,20 +44,22 @@ DEFAULT_SCAN_TARGETS=(
 )
 
 # Global directory excludes — large generated/cache dirs within scan targets
+# Global directory excludes — clamscan uses REGEX, so anchor patterns
+# to avoid false matches (e.g. "dist" matching "distribution")
 GLOBAL_EXCLUDES=(
-    "node_modules"
-    ".git"
-    "__pycache__"
-    ".next"
-    ".vite"
-    "dist"
-    ".cache"
+    "/node_modules$"
+    "/\\.git$"
+    "/__pycache__$"
+    "/\\.next$"
+    "/\\.vite$"
+    "/dist$"
+    "/\\.cache$"
     # Nextcloud internal dirs (cache, previews, updater) — not user files
-    "appdata_ocfczqns5ien"
-    "appdata_oc5mu3v8qzpe"
-    "appdata_ocup9j4vbqge"
-    "updater-oc5mu3v8qzpe"
-    "files_external"
+    "/appdata_ocfczqns5ien(/|$)"
+    "/appdata_oc5mu3v8qzpe(/|$)"
+    "/appdata_ocup9j4vbqge(/|$)"
+    "/updater-oc5mu3v8qzpe(/|$)"
+    "/files_external$"
 )
 
 mkdir -p "$LOG_DIR" "$QUARANTINE_DIR" "$CLAM_DB"
@@ -120,12 +122,19 @@ build_scan_targets() {
     echo "${valid_targets[@]}"
 }
 
+# File extensions to skip — media files that virtually never contain malware.
+# These are regex patterns for clamscan --exclude (matches filenames).
+SKIP_EXTENSIONS='(?i)\.(jpe?g|heic|heif|png|gif|bmp|tiff?|webp|svg|ico|raw|cr2|nef|arw|dng|mov|mp4|avi|mkv|wmv|flv|webm|m4v|3gp|mp3|wav|flac|aac|ogg|m4a|wma|aiff?|aae|stl|3mf|obj|gcode|prt)$'
+
 # ---- Build exclude arguments ----
 build_excludes() {
     local excludes=""
     for dir in "${GLOBAL_EXCLUDES[@]}"; do
         excludes="${excludes} --exclude-dir=${dir}"
     done
+
+    # Skip media/3D/audio files (not malware vectors)
+    excludes="${excludes} --exclude=${SKIP_EXTENSIONS}"
 
     # Additional user excludes from SCAN_EXCLUDES env var (pipe-separated)
     if [ -n "${SCAN_EXCLUDES:-}" ]; then
